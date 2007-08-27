@@ -4,10 +4,13 @@ use warnings;
 use strict;
 use v5.8.0;
 use base 'Class::Accessor::Fast';
+use overload
+    '<<' => \&append,
+    '""' => \&as_string;
 
 __PACKAGE__->mk_accessors qw(statements);
 
-our $VERSION = '0.0.1';
+our $VERSION = '0.0.2';
 
 sub new {
     my $class = shift;
@@ -18,26 +21,59 @@ sub new {
 
 sub call {
     my ($self, $function, @args) = @_;
-    push @{$self->statements},{ call => $function, args => \@args }
+    push @{$self->statements},{
+        object => $self->{object} || undef,
+        call => $function,
+        args => \@args,
+        end_of_call_chain => (!defined wantarray)
+    };
+    delete $self->{object};
+    return $self;
 }
 
 sub append {
     my ($self, $code) = @_;
-    push @{$self->statements}, {
-        code => $code
-    }
+    push @{$self->statements}, { code => $code };
+    return $self;
 }
 
-use UNIVERSAL::to_json;
+sub object {
+    my ($self, $object) = @_;
+    $self->{object} = $object;
+    return $self;
+}
+
+use JavaScript::Writer::Function;
+
+sub function {
+    my ($self, $sub) = @_;
+    my $jsf = JavaScript::Writer::Function->new;
+    $jsf->body($sub);
+    return $jsf;
+}
+
+use JSON::Syck;
 
 sub as_string {
-    require YAML;
     my ($self) = @_;
     my $ret = "";
+
     for (@{$self->statements}) {
         if (my $f = $_->{call}) {
+            my $delimiter = $_->{end_of_call_chain} ? ";" : ".";
             my $args = $_->{args};
-            $ret .= "$f(" . join(",", map { $_->to_json } @$args ) . ");";
+            $ret .= ($_->{object} ? "$_->{object}." : "" ) .
+                "$f(" .
+                    join(",",
+                         map {
+                             if (ref($_) eq 'CODE') {
+                                 $self->function($_)
+                             }
+                             else {
+                                 JSON::Syck::Dump $_
+                             }
+                         } @$args
+                     ) . ")" . $delimiter
         }
         elsif (my $c = $_->{code}) {
             $c .= ";" unless $c =~ /;\s*$/s;
@@ -45,6 +81,21 @@ sub as_string {
         }
     }
     return $ret;
+}
+
+our $AUTOLOAD;
+sub AUTOLOAD {
+    my $self = shift;
+    my $function = $AUTOLOAD;
+    $function =~ s/.*:://;
+
+    return $self->call($function, @_);
+}
+
+
+sub FETCH {
+    my ($self, $obj) = @_;
+    $self->{object} = $obj;
 }
 
 1; # Magic true value required at end of module
@@ -67,8 +118,10 @@ This document describes JavaScript::Writer version 0.0.1
     # Call alert("Nihao")
     $js->call("alert", "Nihao");
 
-    # Similar, but display localized message of "Nihao". (that might be "哈囉")
+    # Similar, but display Perl-localized message of "Nihao". (that might be "哈囉")
     $js->call("alert", _("Nihao") );
+
+    # Overload
 
 =head1 DESCRIPTION
 
@@ -94,6 +147,38 @@ perl's native form, you don't need to use L<JSON> module to serialized
 it first.  (Unless, of course, that's your purpose: to get a JSON
 string in JavaScript.)
 
+=item object( $object )
+
+Give the object name for next function call. The preferred usage is:
+
+    $js->object("Widget.Lightbox")->show("Nihao")
+
+Which will then generated this javascript code snippet:
+
+    Widget.Lightbox.show("Nihao")
+
+=item function( $code_ref )
+
+This is a javascript function writer. It'll output something like this:
+
+    function(){...}
+
+The passed $code_ref is a callback to generate the function
+body. It'll be passed in a JavaScript::Writer object so you can use it
+to write more javascript statements. Here defines a function that
+simply slauts to you.
+
+    my $js = JavaScript::Writer->new;
+    my $f = $js->function(sub {
+        my $js = shift;
+        $js->alert("Nihao")
+    })
+
+The returned $f is a L<JavaScript::Writer::Function> object that
+stringify to this string:
+
+    function(){alert("Nihao")}
+
 =item append( $statement )
 
 Manually append a statement. With this function, you need to properly
@@ -112,7 +197,7 @@ JavaScript::Writer requires no configuration files or environment variables.
 
 =head1 DEPENDENCIES
 
-L<Class::Accessor::Fast>, L<UNIVERSAL::to_json>
+L<Class::Accessor::Fast>
 
 =head1 INCOMPATIBILITIES
 
