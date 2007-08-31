@@ -13,7 +13,7 @@ use JSON::Syck;
 
 __PACKAGE__->mk_accessors qw(statements);
 
-our $VERSION = '0.0.5';
+our $VERSION = '0.0.6';
 
 sub new {
     my $class = shift;
@@ -66,6 +66,17 @@ sub var {
         $s = "var $var;";
     }
     $self->append($s)
+}
+
+sub while {
+    my ($self, $condition, $block) = @_;
+    my $body = sub {
+        my $js = shift;
+        $block->($js);
+        return $js;
+    }->(JavaScript::Writer->new);
+
+    $self->append("while(${condition}){${body}}")
 }
 
 use JavaScript::Writer::Function;
@@ -181,6 +192,18 @@ Give the object name for next function call. The preferred usage is:
 Which will then generated this javascript code snippet:
 
     Widget.Lightbox.show("Nihao")
+
+=item while( $condition => $code_ref )
+
+C<$condition> is a string (yes, just a string for now) of javascript
+code, and a $code_ref is used to generate the block required for this
+while block.
+
+The output of 'while' statement look like this:
+
+    while($condition) {
+        $code
+    }
 
 =item function( $code_ref )
 

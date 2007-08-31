@@ -17,4 +17,4 @@ requires:
   Class::Accessor::Fast: 0
   JSON::Syck: 0
   perl: 5.8.0
-version: 0.0.5
+version: 0.0.6
