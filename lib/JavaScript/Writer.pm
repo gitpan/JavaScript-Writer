@@ -13,7 +13,7 @@ use JSON::Syck;
 
 __PACKAGE__->mk_accessors qw(statements);
 
-our $VERSION = '0.0.6';
+our $VERSION = '0.0.7';
 
 sub new {
     my $class = shift;
@@ -35,8 +35,8 @@ sub call {
 }
 
 sub append {
-    my ($self, $code) = @_;
-    push @{$self->statements}, { code => $code };
+    my ($self, $code, @xs) = @_;
+    push @{$self->statements}, { code => $code, @xs };
     return $self;
 }
 
@@ -45,6 +45,7 @@ sub object {
     $self->{object} = $object;
     return $self;
 }
+
 
 sub var {
     my ($self, $var, $value) = @_;
@@ -68,15 +69,34 @@ sub var {
     $self->append($s)
 }
 
+use JavaScript::Writer::Block;
+
 sub while {
     my ($self, $condition, $block) = @_;
-    my $body = sub {
-        my $js = shift;
-        $block->($js);
-        return $js;
-    }->(JavaScript::Writer->new);
+    my $b = JavaScript::Writer::Block->new;
+    $b->body($block);
+    $self->append("while(${condition})${b}")
+}
 
-    $self->append("while(${condition}){${body}}")
+sub if {
+    my ($self, $condition, $block) = @_;
+    my $b = JavaScript::Writer::Block->new;
+    $b->body($block);
+    $self->append("if(${condition})${b}", delimiter => "\n")
+}
+
+sub elsif {
+    my ($self, $condition, $block) = @_;
+    my $b = JavaScript::Writer::Block->new;
+    $b->body($block);
+    $self->append("else if(${condition})${b}", delimiter => "\n");
+}
+
+sub else {
+    my ($self, $block) = @_;
+    my $b = JavaScript::Writer::Block->new;
+    $b->body($block);
+    $self->append("else${b}", delimiter => "\n");
 }
 
 use JavaScript::Writer::Function;
@@ -94,7 +114,8 @@ sub as_string {
 
     for (@{$self->statements}) {
         if (my $f = $_->{call}) {
-            my $delimiter = $_->{end_of_call_chain} ? ";" : ".";
+            my $delimiter = $_->{delimiter} ||
+                ($_->{end_of_call_chain} ? ";" : ".");
             my $args = $_->{args};
             $ret .= ($_->{object} ? "$_->{object}." : "" ) .
                 "$f(" .
@@ -110,7 +131,9 @@ sub as_string {
                      ) . ")" . $delimiter
         }
         elsif (my $c = $_->{code}) {
-            $c .= ";" unless $c =~ /;\s*$/s;
+            my $delimiter = $_->{delimiter} || ";";
+            $c .= $delimiter
+                unless $c =~ /$delimiter\s*$/s;
             $ret .= $c;
         }
     }
@@ -193,6 +216,7 @@ Which will then generated this javascript code snippet:
 
     Widget.Lightbox.show("Nihao")
 
+
 =item while( $condition => $code_ref )
 
 C<$condition> is a string (yes, just a string for now) of javascript
@@ -204,6 +228,21 @@ The output of 'while' statement look like this:
     while($condition) {
         $code
     }
+
+=item if ( $codnition => $code_ref )
+
+=item elsif ( $codnition => $code_ref )
+
+=item else ( $code_ref )
+
+These 3 methods forms a trinity to construct the if..elsif..else form
+of control structure. Of course, in JavaScript, it it's not called
+"elsif", but "else if". But hey, we're Perl people.
+
+The arguements are pretty similar to C<while> method. But these
+function use newline characters to deliminate them from others rather
+then using ";".  That's the major difference between them and all
+other methods.
 
 =item function( $code_ref )
 
