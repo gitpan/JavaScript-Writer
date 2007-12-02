@@ -3,28 +3,27 @@ package JavaScript::Writer;
 use warnings;
 use strict;
 use v5.8.0;
-use base 'Class::Accessor::Fast';
 use overload
     '<<' => \&append,
     '""' => \&as_string;
 
-
 use JSON::Syck;
 
-__PACKAGE__->mk_accessors qw(statements);
-
-our $VERSION = '0.0.7';
+our $VERSION = '0.0.8';
 
 sub new {
     my $class = shift;
+    if (ref $class) {
+        return __PACKAGE__->new;
+    }
     my $self = bless {}, $class;
-    $self->statements([]);
+    $self->{statements} = [];
     return $self;
 }
 
 sub call {
     my ($self, $function, @args) = @_;
-    push @{$self->statements},{
+    push @{$self->{statements}},{
         object => $self->{object} || undef,
         call => $function,
         args => \@args,
@@ -36,7 +35,14 @@ sub call {
 
 sub append {
     my ($self, $code, @xs) = @_;
-    push @{$self->statements}, { code => $code, @xs };
+    push @{$self->{statements}}, { code => $code, @xs };
+    return $self;
+}
+
+sub end {
+    my $self = shift;
+    my $last = $self->{statements}[-1];
+    $last->{end_of_call_chain} = 1;
     return $self;
 }
 
@@ -47,26 +53,45 @@ sub object {
 }
 
 
+use JavaScript::Writer::Var;
+
 sub var {
     my ($self, $var, $value) = @_;
     my $s = "";
-    if (defined $value) {
-        if (ref($value) eq 'ARRAY'
-                || ref($value) eq 'HASH'
-                || !ref($value) ) {
-            $s = "var $var = " . JSON::Syck::Dump($value) . ";"
-        }
-        elsif (ref($value) eq 'CODE') {
-            $s = "var $var = " . $self->function($value);
-        }
-        elsif (ref($value) =~ '^JavaScript::Writer') {
-            $s = "var $var = " . $value->as_string();
-        }
-    }
-    else {
+
+    if (!defined $value) {
         $s = "var $var;";
     }
-    $self->append($s)
+    elsif (ref($value) eq 'ARRAY' || ref($value) eq 'HASH' || !ref($value) ) {
+        $s = "var $var = " . JSON::Syck::Dump($value) . ";"
+    }
+    elsif (ref($value) eq 'CODE') {
+        $s = "var $var = " . $self->function($value);
+    }
+    elsif (ref($value) =~ /^JavaScript::Writer/) {
+        $s = "var $var = " . $value->as_string();
+    }
+    elsif (ref($value) eq 'REF') {
+        $s = $self->new->var($var => $$value)->end->as_string;
+    }
+    elsif (ref($value) eq 'SCALAR') {
+        if (defined $$value) {
+            $s = "var $var = " . JSON::Syck::Dump($$value) . ";";
+        }
+        else {
+            $s = "var $var;";
+        }
+        JavaScript::Writer::Var->new(
+            $value,
+            {
+                name => $var,
+                jsw  => $self
+            }
+        );
+    }
+
+    $self->append($s);
+    return $self;
 }
 
 use JavaScript::Writer::Block;
@@ -112,7 +137,7 @@ sub as_string {
     my ($self) = @_;
     my $ret = "";
 
-    for (@{$self->statements}) {
+    for (@{$self->{statements}}) {
         if (my $f = $_->{call}) {
             my $delimiter = $_->{delimiter} ||
                 ($_->{end_of_call_chain} ? ";" : ".");
@@ -138,6 +163,11 @@ sub as_string {
         }
     }
     return $ret;
+}
+
+sub as_html {
+    my $self = shift;
+    qq{<script type="text/javascript">$self</script>}
 }
 
 our $AUTOLOAD;
@@ -191,7 +221,11 @@ use its C<call> method to call a certain functions from your library.
 
 =item new()
 
-Object constructor. Takes nothing, gives you an javascript writer object.
+Object constructor. Takes nothing, gives you an javascript writer
+object. It can be called as a class method, or an object method.
+However, calling it on objects does not imply cloning the original
+object, but just a shorthand because typing package name is always
+longer.
 
 =item call( $function, $arg1, $arg2, $arg3, ...)
 
@@ -205,6 +239,44 @@ string in JavaScript.)
 
 Declare a value named $name with a optional default value $value.
 $value could be an arrayref, hashref, or scalar.
+
+
+=item var( $name, \$your_var )
+
+Another form of calling var. Please notice that the second argument
+must be a scalar reference.
+
+This let you tie a Perl scalar into a javascript variable. Further
+assignments on that Perl scalar will directly effect the output of your
+javasciprt writer objcet. For example:
+
+    my $a;
+    my $js = JavaScript::Writer->new;
+    $js->var(ans => \$a);
+    $a = 42;
+
+    print $js->as_string;
+    # "var a;a = 42;"
+
+Or something like this;
+
+    my $js = JavaScript::Writer->new;
+    my $a;
+    $js->var(ans => \$a);
+
+    my $a = $js->new->myAjaxGet("/my/foo.json")->end();
+    print $js->as_string;
+    # var a;a = myAjaxGet("/my/foo.json");
+
+=item end()
+
+Assert an end of call chain. Calling this is required if you're
+calling $js methods at the right side of an assignment. Like:
+
+    my $a = $js->new->somefunc("foobar")->end();
+
+Please also refer to the example code in the description of C<var>
+method.
 
 =item object( $object )
 
@@ -275,6 +347,10 @@ doing.
 =item as_string()
 
 Output your statements as a snippet of javascript code.
+
+=item as_html()
+
+Output your javascript statements as a snippet with a <script> tag.
 
 =back
 
