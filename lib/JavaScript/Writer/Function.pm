@@ -2,17 +2,15 @@ package JavaScript::Writer::Function;
 
 use strict;
 use warnings;
-use v5.8.0;
+use 5.008;
 use base 'Class::Accessor::Fast';
 
 __PACKAGE__->mk_accessors(qw[ name body ]);
 
 use overload '""' => \&as_string;
 
-
 our $VERSION = '0.0.2';
 
-use JavaScript::Writer;
 use JavaScript::Writer::Block;
 
 sub new {

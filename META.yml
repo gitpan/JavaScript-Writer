@@ -2,6 +2,7 @@
 abstract: ~
 author: Kang-min Liu  C<< <gugod@gugod.org> >>
 build_requires: 
+  Test::Class: 0
   Test::More: 0.42
 distribution_type: module
 generated_by: Module::Install version 0.67
@@ -17,4 +18,5 @@ requires:
   Class::Accessor::Fast: 0
   JSON::Syck: 0
   perl: 5.8.0
-version: 0.0.8
+  self: 0
+version: 0.1.0
