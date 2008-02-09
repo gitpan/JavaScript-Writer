@@ -6,9 +6,35 @@ use warnings;
 use JavaScript::Writer;
 use Test::More;
 
-plan tests => 7;
+plan tests => 11;
 
 {
+    js->new;
+    js("true")->do(sub {
+        js->alert(42);
+    });
+
+    is js->as_string, "if(true){alert(42);}";
+}
+
+
+{
+    js->new;
+    js->while("true", sub {
+        js->alert(42);
+    });
+
+    is js->as_string, qq{while(true){alert(42);}};
+}
+
+{
+    js->new;
+    js("Widget.Lightbox")->show("Nihao");
+    is js->as_string, qq{Widget.Lightbox.show("Nihao");};
+}
+
+{
+    js->new;
     js("3s")->latter(
         sub {
             js->alert(42);
@@ -71,3 +97,13 @@ plan tests => 7;
     js->new->let(a => sub { $_[0]->alert(42); });
     is js->as_string, q{var a = function(){alert(42);};};
 }
+
+
+{
+    js->new;
+
+    js->let( a => \ "b");
+
+    is js->as_string, q{var a = b;};
+}
+

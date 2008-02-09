@@ -2,16 +2,21 @@ package JavaScript::Writer;
 
 use warnings;
 use strict;
-use 5.008;
-use overload
-    '<<' => \&append,
-    '""' => \&as_string;
 
+use 5.008;
 use self;
+
+use overload
+    '<<' => sub {
+        no warnings;
+        push @{ self->{statements} }, { code => args };
+        return self;
+    },
+    '""' => \&as_string;
 
 use JSON::Syck;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.2.0';
 
 use Sub::Exporter -setup => {
     exports => ['js'],
@@ -22,37 +27,39 @@ use Sub::Exporter -setup => {
 
 my $base;
 
-sub js {
-    # Let bareword 'js' also refer to $_[0] when it's used in the callbacks.
-    my $level = 1;
+sub _js {
+    # Return the top-most $_[0] JavaScript::Writer object in stack.
+    my $level = 2;
     my @c = ();
     my $js;
-    while ( $level < 3 && (!defined($c[3]) || $c[3] eq '(eval)') ) {
+    while ( $level < 10 && (!defined($c[3]) || $c[3] eq '(eval)') ) {
         @c = do {
             package DB;
             @DB::args = ();
             caller($level);
         };
         $level++;
+
         if (ref($DB::args[0]) eq 'JavaScript::Writer') {
             $js = $DB::args[0] ;
             last;
         }
     }
+    return $js;
+}
 
-    my ($target) = @_;
+sub js {
+    my $js = _js();
+
+    my ($obj) = @_;
     if (defined $js) {
-        $js->{target} = $target if defined $target;
+        $js->{object} = $obj if defined $obj;
         return $js;
     }
 
     $base = JavaScript::Writer->new() unless defined $base;
-    if (defined $target) {
-        $base->{target} = $target;
-    }
-    
+    $base->{object} = $obj if defined $obj;
     return $base;
-
 }
 
 sub new {
@@ -63,6 +70,7 @@ sub new {
         }
         return __PACKAGE__->new;
     }
+
     my $self = bless { args }, self;
     $self->{statements} = [];
     return $self;
@@ -70,26 +78,33 @@ sub new {
 
 sub call {
     my ($function, @args) = args;
+    my $eoc = !defined wantarray;
     push @{self->{statements}},{
-        object => self->{object} || undef,
+        object => delete self->{object} || undef,
         call => $function,
         args => \@args,
-        end_of_call_chain => (!defined wantarray)
+        end_of_call_chain => $eoc
     };
-    delete self->{object};
     return self;
+}
+
+sub __in_jsw_packages__ {
+    my $level = 0;
+    my @c = caller(++$level);
+    while ( @c > 0 ) {
+        return 1 if defined $c[0] && index($c[0], __PACKAGE__) == 0;
+        @c = caller(++$level);
+    }
+    return 0;
 }
 
 sub append {
-    my ($code, @xs) = args;
-    push @{self->{statements}}, { code => $code, @xs };
-    return self;
-}
+    if ( __in_jsw_packages__ ) {
+        push @{ self->{statements} }, { code => args };
+        return self;
+    }
 
-sub end {
-    my $last = self->{statements}[-1];
-    $last->{end_of_call_chain} = 1;
-    return self;
+    return self->call("append", args);
 }
 
 sub object {
@@ -100,7 +115,7 @@ sub object {
 sub latter {
     my ($cb) = args;
 
-    my $timeout = self->{target};
+    my $timeout = delete self->{object};
     $timeout =~ s/ms$//;
     $timeout =~ s/s$/000/;
 
@@ -139,22 +154,30 @@ sub var {
         $s = "var $var = " . $value->as_string();
     }
     elsif (ref($value) eq 'REF') {
-        $s = $self->new->var($var => $$value)->end->as_string;
+        my $j = $self->new;
+        $j->var($var => $$value);
+        $s = $j->as_string;
     }
     elsif (ref($value) eq 'SCALAR') {
         if (defined $$value) {
-            $s = "var $var = " . JSON::Syck::Dump($$value) . ";";
+            my $v = $self->obj_as_string($value);
+
+            $s = "var $var = $v;";
         }
         else {
             $s = "var $var;";
         }
-        JavaScript::Writer::Var->new(
-            $value,
-            {
-                name => $var,
-                jsw  => $self
-            }
-        );
+
+        eval {
+            JavaScript::Writer::Var->new(
+                $value,
+                {
+                    name => $var,
+                    jsw  => $self
+                }
+            );
+        };
+
     }
 
     $self->append($s);
@@ -163,85 +186,115 @@ sub var {
 
 use JavaScript::Writer::Block;
 
+sub do {
+    my ($block) = args;
+    my $condition = delete self->{object};
+    my $b = JavaScript::Writer::Block->new;
+    $b->body($block);
+    self->append("if($condition)${b}", delimiter => "" );
+}
+
 sub while {
     my ($self, $condition, $block) = @_;
     my $b = JavaScript::Writer::Block->new;
     $b->body($block);
-    $self->append("while(${condition})${b}")
-}
-
-sub if {
-    my ($self, $condition, $block) = @_;
-    my $b = JavaScript::Writer::Block->new;
-    $b->body($block);
-    $self->append("if(${condition})${b}", delimiter => "\n")
-}
-
-sub elsif {
-    my ($self, $condition, $block) = @_;
-    my $b = JavaScript::Writer::Block->new;
-    $b->body($block);
-    $self->append("else if(${condition})${b}", delimiter => "\n");
-}
-
-sub else {
-    my ($self, $block) = @_;
-    my $b = JavaScript::Writer::Block->new;
-    $b->body($block);
-    $self->append("else${b}", delimiter => "\n");
+    $self->append("while(${condition})${b}", , delimiter => "" );
 }
 
 use JavaScript::Writer::Function;
 
 sub function {
-    my ($self, $sub) = @_;
-    my $jsf = JavaScript::Writer::Function->new;
-    $jsf->body($sub);
-    return $jsf;
+    return JavaScript::Writer::Function->new(args);
+}
+
+sub obj_as_string {
+    my ($obj) = args;
+
+    if (ref($obj) eq 'CODE') {
+        return self->function($obj);
+    }
+    elsif (ref($obj) =~ /^JavaScript::Writer/) {
+        return $obj->as_string
+    }
+    elsif (ref($obj) eq "SCALAR") {
+        return $$obj
+    }
+    elsif (ref($obj) eq 'ARRAY') {
+        my @ret = map {
+            self->obj_as_string($_)
+        } @$obj;
+
+        return "[" . join(",", @ret) . "]";
+    }
+    elsif (ref($obj) eq 'HASH') {
+        my %ret;
+        while (my ($k, $v) = each %$obj) {
+            $ret{$k} = self->obj_as_string($v)
+        }
+        return "{" . join (",", map { JSON::Syck::Dump($_) . ":" . $ret{$_} } keys %ret) . "}";
+    }
+    else {
+        return JSON::Syck::Dump($obj)
+    }
 }
 
 sub as_string {
     my $ret = "";
 
     for (@{self->{statements}}) {
+        my $delimiter =
+            defined($_->{delimiter}) ? $_->{delimiter} : ($_->{end_of_call_chain} ? ";" : ".");
         if (my $f = $_->{call}) {
-            my $delimiter = $_->{delimiter} ||
-                ($_->{end_of_call_chain} ? ";" : ".");
+
             my $args = $_->{args};
             $ret .= ($_->{object} ? "$_->{object}." : "" ) .
                 "$f(" .
                     join(",",
                          map {
-                             if (ref($_) eq 'CODE') {
-                                 self->function($_)
-                             }
-                             else {
-                                 JSON::Syck::Dump $_
-                             }
+                             self->obj_as_string( $_ );
                          } @$args
                      ) . ")" . $delimiter
         }
         elsif (my $c = $_->{code}) {
-            my $delimiter = $_->{delimiter} || ";";
-            $c .= $delimiter
-                unless $c =~ /$delimiter\s*$/s;
+            $delimiter = defined $_->{delimiter}  ? $_->{delimiter} : ";";
+            $c .= $delimiter unless $c =~ /$delimiter\s*$/s;
             $ret .= $c;
         }
     }
     return $ret;
 }
 
-sub as_html {
-    qq{<script type="text/javascript">${\self->as_string}</script>}
+require JavaScript::Writer::BasicHelpers;
+
+{
+    my $sn = 0;
+    sub as_html {
+        my ($self, %param) = @_;
+        $sn++;
+
+        my $id = "javascript-writer-$$-$sn";
+
+        if ($param{closure}) {
+            my $j = JavaScript::Writer->new;
+            my $self_code = $self->as_string;
+            $j->closure(
+                this => \ "document.getElementById('$id')",
+                body => sub {
+                    js->append( $self_code );
+                }
+            );
+            return qq{<script id="$id" type="text/javascript">$j</script>}
+        }
+        return qq{<script type="text/javascript">$self</script>};
+    }
 }
 
 our $AUTOLOAD;
 sub AUTOLOAD {
-    my $self = shift;
     my $function = $AUTOLOAD;
     $function =~ s/.*:://;
 
-    return $self->call($function, @_);
+    return self->call($function, args);
 }
 
 1; # Magic true value required at end of module
@@ -278,7 +331,7 @@ use its C<call> method to call a certain functions from your library.
 
 =over
 
-=item js( [ $target ] )
+=item js( [ $object ] )
 
 This function is exported by default to your namespace. Is the spiffy
 ultimate entry point for generating all kinds of javascripts.
@@ -287,13 +340,19 @@ C<js> represents a singleton object of all namespace. Unless used in a
 subroutine passed to construct a JavaScript function, it always refers
 to the same C<JavaScript::Writer> object.
 
-It optionally takes a C<$target> parameter that represents something
+It optionally takes a C<$object> parameter that represents something
 on which you can perform some action. For example, here's the sweet
 way to do C<setTimeout>:
 
     js("3s")->latter(sub{
         js->say('something');
     });
+
+Or usually it can just be a normal object:
+
+    js("Widget.Lightbox")->show( $content );
+
+    # Widget.Lightbox.show( ... )
 
 =item new()
 
@@ -346,7 +405,7 @@ Or something like this;
     my $a;
     $js->var(ans => \$a);
 
-    my $a = $js->new->myAjaxGet("/my/foo.json")->end();
+    my $a = $js->new->myAjaxGet("/my/foo.json");
     print $js->as_string;
     # var a;a = myAjaxGet("/my/foo.json");
 
@@ -372,16 +431,6 @@ default.
 More complex time representation like C<"3h5m2s">, are not implement
 yet.
 
-=item end()
-
-Assert an end of call chain. Calling this is required if you're
-calling $js methods at the right side of an assignment. Like:
-
-    my $a = $js->new->somefunc("foobar")->end();
-
-Please also refer to the example code in the description of C<var>
-method.
-
 =item object( $object )
 
 Give the object name for next function call. The preferred usage is:
@@ -404,20 +453,21 @@ The output of 'while' statement look like this:
         $code
     }
 
-=item if ( $codnition => $code_ref )
+=item do ( $code_ref )
 
-=item elsif ( $codnition => $code_ref )
+C<do> method acts like C<if>:
 
-=item else ( $code_ref )
+    js("foo")->do(sub {
+      ....
+    });
 
-These 3 methods forms a trinity to construct the if..elsif..else form
-of control structure. Of course, in JavaScript, it it's not called
-"elsif", but "else if". But hey, we're Perl people.
+That code generate this javascript:
 
-The arguements are pretty similar to C<while> method. But these
-function use newline characters to deliminate them from others rather
-then using ";".  That's the major difference between them and all
-other methods.
+    if(foo) {
+        ....
+    }
+
+NOTICE: The old if-else-elsif methods are removed due to their stupid looking design.
 
 =item function( $code_ref )
 
@@ -441,19 +491,89 @@ stringify to this string:
 
     function(){alert("Nihao")}
 
-=item append( $statement )
+=item closure(&block)
 
-Manually append a statement. With this function, you need to properly
-serialize everything to JSON. Make sure you now that what you're
-doing.
+Generate a closure with body &block. This means to generate a
+construct like this:
+
+    ;(function(){
+        // ...
+    })();
+
+It's very useful for doing functional programming in javascript.
+
+=item closure(arguments => { name => value }, body => sub {... }, ...)
+
+Another form of the closure function. For example:
+
+  js->closure(
+      parameters => {
+          el => "document.getElementById('foo')",
+          var1 => "var1",
+          var2 => \ "var 2 value"
+      },
+      body => sub {
+          ...
+      }
+  );
+
+This generates something like this:
+
+    ;(function(el, var1, var2){
+        ...
+    })(document.getElementById('foo'), var1, "var 2 value");
+
+The value to the key "parameters" is a hashref, which means the order
+of function arguments is not guarenteed. But that shouldn't matter at
+all because they are all named. They have to be named anyway.
+
+The value to the key "this" refers to te value of "this" variable in
+the closure. For example:
+
+  js->closure(
+      this => "el",
+      parameters => { msg => \ "Hello, World" }
+      body => sub {
+        js->jQuery("this")->html("msg");
+      }
+  );
+
+This generates
+
+    ;(function(msg){
+        jQuery(this).html(msg);
+    }).call(el, "Hello, World");
+
+=item delay($n, &block)
+
+Generate a piece of code that delays the execution of &block for $n
+seconds.
 
 =item as_string()
 
 Output your statements as a snippet of javascript code.
 
+=item obj_as_string()
+
+This is use internally as a wrapper to JSON::Syck::Dump sub-routine,
+in order to allow functions to be dumped as a part of javascript
+object.
+
 =item as_html()
 
 Output your javascript statements as a snippet with a <script> tag.
+
+=item append( $statement )
+
+[NOTICE]: This function behaves differently depends when it's called
+outside JavaScript::Writer.
+
+Internally it manually append a statement string. Caller needs to
+properly serialize everything to JSON, and make sure that $statement
+has no syntax error.
+
+If it's called from outside of JavaScript::Writer packages, it'll
+render a function call to "append" function.
 
 =back
 

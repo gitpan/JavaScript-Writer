@@ -19,4 +19,4 @@ requires:
   JSON::Syck: 0
   perl: 5.8.0
   self: 0
-version: 0.1.0
+version: 0.2.0
