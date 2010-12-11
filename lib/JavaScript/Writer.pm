@@ -16,7 +16,7 @@ use overload
 
 use JSON::Syck;
 
-our $VERSION = '0.3.0';
+our $VERSION = '0.3.1';
 
 use Sub::Exporter -setup => {
     exports => ['js'],

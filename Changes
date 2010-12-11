@@ -1,5 +1,8 @@
 Revision history for JavaScript-Writer
 
+0.3.1
+- Fix those tests broken by Test::More 0.96. Need to explicitly stringify overloaded objects.
+
 0.3.0
 - Introduce JE.pm in testing to verify the generated javascript code are 
   correct in syntax.
